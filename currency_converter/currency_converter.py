@@ -105,6 +105,7 @@ class CurrencyConverter(object):
                  currency_file=CURRENCY_FILE,
                  fallback_on_wrong_date=False,
                  fallback_on_missing_rate=False,
+                 fallback_on_last_known_rate=False,
                  ref_currency='EUR',
                  na_values=frozenset(['', 'N/A']),
                  verbose=False):
@@ -122,6 +123,9 @@ class CurrencyConverter(object):
         :param bool fallback_on_missing_rate: Set to True to linearly
             interpolate missing rates by their two closest valid rates. This
             only affects dates within the source data's range. Default False.
+        :param bool fallback_on_last_known_rate: Set to True to fill
+            missing rate dates their with last know rates. This
+            only affects dates within the source data's range. Default False.
         :param str ref_currency: Three-letter currency code for the currency
             that the source data is oriented towards. This is EUR for the
             default European Central Bank data, and so the default is 'EUR'.
@@ -132,6 +136,7 @@ class CurrencyConverter(object):
         # Global options
         self.fallback_on_wrong_date = fallback_on_wrong_date
         self.fallback_on_missing_rate = fallback_on_missing_rate
+        self.fallback_on_last_known_rate = fallback_on_last_known_rate
         self.ref_currency = ref_currency  # reference currency of rates
         self.na_values = na_values        # missing values
         self.verbose = verbose
@@ -178,7 +183,7 @@ class CurrencyConverter(object):
 
         for currency in sorted(self._rates):
             self._set_missing_to_none(currency)
-            if self.fallback_on_missing_rate:
+            if self.fallback_on_missing_rate or self.fallback_on_last_known_rate:
                 self._compute_missing_rates(currency)
 
     def _compute_bounds(self):
@@ -190,7 +195,7 @@ class CurrencyConverter(object):
             max(b.last_date for b in itervalues(self.bounds)))
 
     def _set_missing_to_none(self, currency):
-        """Fill missing rates of a currency with the closest available ones."""
+        """Fill missing rates of a currency with None"""
         rates = self._rates[currency]
         first_date, last_date = self.bounds[currency]
 
@@ -208,7 +213,9 @@ class CurrencyConverter(object):
     def _compute_missing_rates(self, currency):
         """Fill missing rates of a currency.
 
-        This is done by linear interpolation of the two closest available rates.
+        This is done by either :
+            - linear interpolation of the two closest available rates
+            - getting the last known rate
 
         :param str currency: The currency to fill missing rates for.
         """
@@ -226,21 +233,28 @@ class CurrencyConverter(object):
                 dist += 1
                 tmp[date][0] = closest_rate, dist
 
-        for date in sorted(rates, reverse=True):
-            rate = rates[date]
-            if rate is not None:
-                closest_rate = rate
-                dist = 0
-            else:
-                dist += 1
-                tmp[date][1] = closest_rate, dist
-
-        for date in sorted(tmp):
-            (r0, d0), (r1, d1) = tmp[date]
-            rates[date] = (r0 * d1 + r1 * d0) / (d0 + d1)
+        if self.fallback_on_last_known_rate:
+            for date in sorted(tmp):
+                rates[date] = tmp[date][0][0]
             if self.verbose:
-                print(('{0}: filling {1} missing rate using {2} ({3}d old) and '
-                       '{4} ({5}d later)').format(currency, date, r0, d0, r1, d1))
+                print(('{0}: filling {1} missing rate using {2} ({3}d old)'
+                       ).format(currency, date, tmp[date][0][0], tmp[date][0][1]))
+        else:
+            for date in sorted(rates, reverse=True):
+                rate = rates[date]
+                if rate is not None:
+                    closest_rate = rate
+                    dist = 0
+                else:
+                    dist += 1
+                    tmp[date][1] = closest_rate, dist
+
+            for date in sorted(tmp):
+                (r0, d0), (r1, d1) = tmp[date]
+                rates[date] = (r0 * d1 + r1 * d0) / (d0 + d1)
+                if self.verbose:
+                    print(('{0}: filling {1} missing rate using {2} ({3}d old) and '
+                           '{4} ({5}d later)').format(currency, date, r0, d0, r1, d1))
 
     def _get_rate(self, currency, date):
         """Get a rate for a given currency and date.
